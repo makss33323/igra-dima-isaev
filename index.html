@@ -1,0 +1,911 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<title>Прохождение лисы на свободу — v0.2</title>
+<style>
+  html,body{margin:0;height:100%;background:#10151f;display:flex;align-items:center;justify-content:center;overflow:hidden;font-family:'Segoe UI',Arial,sans-serif;touch-action:none;overscroll-behavior:none;}
+  #wrap{display:flex;flex-direction:column;align-items:center;gap:4px;width:100%;height:100%;}
+  canvas{display:block;background:#4e8f43;}
+  #hint{color:#7f8ba1;text-align:center;font-size:12px;padding:2px 8px;}
+  /* ---------- сенсорное управление (телефон) ---------- */
+  #touch{display:none;position:fixed;inset:0;pointer-events:none;z-index:10;}
+  body.touch #touch{display:block;}
+  body.touch #hint{display:none;}
+  #joy{position:absolute;left:calc(18px + env(safe-area-inset-left));bottom:calc(18px + env(safe-area-inset-bottom));width:34vw;max-width:150px;height:34vw;max-height:150px;pointer-events:auto;touch-action:none;}
+  #joyBase{position:absolute;inset:0;border-radius:50%;background:rgba(255,255,255,0.09);border:2px solid rgba(255,255,255,0.25);}
+  #joyKnob{position:absolute;left:50%;top:50%;width:44%;height:44%;transform:translate(-50%,-50%);border-radius:50%;background:rgba(255,255,255,0.32);border:2px solid rgba(255,255,255,0.5);}
+  #btns{position:absolute;right:calc(14px + env(safe-area-inset-right));bottom:calc(14px + env(safe-area-inset-bottom));width:38vw;max-width:190px;height:38vw;max-height:190px;pointer-events:none;}
+  .btn{position:absolute;border-radius:50%;background:rgba(255,255,255,0.14);border:2px solid rgba(255,255,255,0.4);color:#fff;font-weight:bold;font-size:3.2vw;max-font-size:17px;display:flex;align-items:center;justify-content:center;pointer-events:auto;user-select:none;-webkit-user-select:none;touch-action:none;}
+  .btn:active{background:rgba(255,255,255,0.32);}
+  #btnRun{right:0;bottom:16%;width:30%;height:30%;font-size:2.6vw;}
+  #btnF{right:34%;bottom:0;width:30%;height:30%;}
+  #btnE{right:0;bottom:52%;width:26%;height:26%;}
+  #btnQ{right:40%;bottom:40%;width:22%;height:22%;}
+  #btnP{position:absolute;right:calc(14px + env(safe-area-inset-right));top:calc(14px + env(safe-area-inset-top));width:54px;height:54px;font-size:2.4vw;max-font-size:17px;}
+</style>
+</head>
+<body>
+<div id="wrap">
+<canvas id="game" width="960" height="600"></canvas>
+<div id="hint">W A S D — ходить · ПРОБЕЛ — бег · E — взять · F — бить · Q — съесть еду (+2 ❤) · P — пауза · M — звук · R — заново</div>
+</div>
+<div id="touch">
+  <div id="joy"><div id="joyBase"></div><div id="joyKnob"></div></div>
+  <div id="btns">
+    <div class="btn" id="btnRun">БЕГ</div>
+    <div class="btn" id="btnF">БИТЬ</div>
+    <div class="btn" id="btnE">ВЗЯТЬ</div>
+    <div class="btn" id="btnQ">ЕДА</div>
+  </div>
+  <div class="btn" id="btnP">II</div>
+</div>
+<script>
+'use strict';
+/* ==================================================================
+   ПРОХОЖДЕНИЕ ЛИСЫ НА СВОБОДУ — v0.2
+   Герой: рыжая добрая лиса Артём (любит еду). Мама: Венера.
+   Монстры сломали дом Артёма. Цель: собрать всю еду и все вещи,
+   найти меч, уничтожить всех монстров — и поделиться с друзьями!
+   Управление: W/A/S/D — ходьба, ПРОБЕЛ — бег, E — взять, F — бить.
+   На телефоне: джойстик слева, кнопки БЕГ/БИТЬ/ВЗЯТЬ/ЕДА/II справа.
+   ================================================================== */
+const W = 960, H = 600;
+const WORLD = { w: 1800, h: 1300 };
+const HOUSE = { x: 120, y: 250, w: 240, h: 180 };
+const FOOD_N = 6, THING_N = 3, MON_N = 8;
+const canvas = document.getElementById('game');
+const ctx = canvas.getContext('2d');
+window.__errs = [];
+window.addEventListener('error', e => window.__errs.push(String(e.message)));
+
+/* ---------- масштабирование под экран телефона ---------- */
+function fitScreen(){
+  const availW = window.innerWidth, availH = window.innerHeight;
+  const hintH = document.body.classList.contains('touch') ? 0 : 36;
+  const scale = Math.min(availW / W, (availH - hintH) / H);
+  canvas.style.width = Math.round(W * scale) + 'px';
+  canvas.style.height = Math.round(H * scale) + 'px';
+  canvas.style.margin = 'auto';
+}
+addEventListener('resize', fitScreen);
+addEventListener('orientationchange', () => setTimeout(fitScreen, 150));
+
+/* ---------- сенсорное управление (телефон) ---------- */
+const TOUCH = ('ontouchstart' in window) || navigator.maxTouchPoints > 0;
+if(TOUCH) document.body.classList.add('touch');
+fitScreen();
+const JOY = document.getElementById('joy'), KNOB = document.getElementById('joyKnob');
+const joyState = { id: null, dx: 0, dy: 0 };
+
+function joyUpdate(){
+  const dz = 0.2; // мёртвая зона 20%
+  keys.KeyA = joyState.dx < -dz; keys.KeyD = joyState.dx > dz;
+  keys.KeyW = joyState.dy < -dz; keys.KeyS = joyState.dy > dz;
+}
+function joyReset(){
+  joyState.id = null; joyState.dx = 0; joyState.dy = 0;
+  keys.KeyA = keys.KeyD = keys.KeyW = keys.KeyS = false;
+  KNOB.style.transform = 'translate(-50%,-50%)';
+}
+function joyHandle(t){
+  const r = JOY.getBoundingClientRect();
+  const cx = r.left + r.width / 2, cy = r.top + r.height / 2;
+  const dx = t.clientX - cx, dy = t.clientY - cy;
+  const len = Math.max(1, Math.hypot(dx, dy)), max = r.width / 2;
+  const cl = Math.min(1, len / max);
+  joyState.dx = dx / len * cl;
+  joyState.dy = dy / len * cl;
+  KNOB.style.transform = 'translate(calc(-50% + ' + (dx / len * cl * max * 0.7) + 'px), calc(-50% + ' + (dy / len * cl * max * 0.7) + 'px))';
+  joyUpdate();
+}
+JOY.addEventListener('touchstart', e => {
+  e.preventDefault();
+  const t = e.changedTouches[0];
+  joyState.id = t.identifier;
+  joyHandle(t);
+  ensureAudio();
+  if(state === 'title') startRun();
+}, { passive: false });
+JOY.addEventListener('touchmove', e => {
+  e.preventDefault();
+  for(const t of e.changedTouches) if(t.identifier === joyState.id) joyHandle(t);
+}, { passive: false });
+JOY.addEventListener('touchend', e => {
+  e.preventDefault();
+  for(const t of e.changedTouches) if(t.identifier === joyState.id) joyReset();
+}, { passive: false });
+JOY.addEventListener('touchcancel', () => joyReset(), { passive: false });
+
+/* кнопки: БЕГ держать, E/F/Q/P — нажать */
+function bindHold(id, code){
+  const el = document.getElementById(id);
+  el.addEventListener('touchstart', e => {
+    e.preventDefault(); keys[code] = true; ensureAudio();
+    if(state === 'title') startRun();
+  }, { passive: false });
+  el.addEventListener('touchend', e => { e.preventDefault(); keys[code] = false; }, { passive: false });
+}
+function bindTap(id, code){
+  const el = document.getElementById(id);
+  el.addEventListener('touchstart', e => {
+    e.preventDefault(); ensureAudio();
+    if(state === 'title'){ startRun(); return; }
+    pressed[code] = true;
+  }, { passive: false });
+}
+bindHold('btnRun', 'Space');
+bindTap('btnE', 'KeyE');
+bindTap('btnF', 'KeyF');
+bindTap('btnQ', 'KeyQ');
+bindTap('btnP', 'KeyP');
+
+/* ---------- ввод ---------- */
+const keys = {}, pressed = {};
+const HANDLED = new Set(['KeyW','KeyA','KeyS','KeyD','Space','KeyE','KeyF','KeyQ','KeyP','KeyM','KeyR','Escape','ArrowUp','ArrowDown','ArrowLeft','ArrowRight']);
+addEventListener('keydown', e => {
+  if (HANDLED.has(e.code)) e.preventDefault();
+  if (!e.repeat && !keys[e.code]) pressed[e.code] = true;
+  keys[e.code] = true;
+  ensureAudio();
+  if (state === 'title' && !e.repeat) startRun();
+});
+addEventListener('keyup', e => { keys[e.code] = false; });
+addEventListener('pointerdown', () => { ensureAudio(); if (state === 'title') startRun(); });
+/* на телефоне: тап по экрану перезапускает игру после победы/проигрыша */
+canvas.addEventListener('touchstart', e => {
+  e.preventDefault(); ensureAudio();
+  if(state === 'win' || state === 'lose') startRun();
+}, { passive: false });
+
+/* ---------- звук (маленький синтезатор, файлы не нужны) ---------- */
+let AC = null, soundOn = true;
+function ensureAudio(){
+  if(!AC){ try{ AC = new (window.AudioContext || window.webkitAudioContext)(); }catch(e){} }
+  if(AC && AC.state === 'suspended') AC.resume();
+}
+function tone(f, t0, d, type, vol){
+  if(!AC) return;
+  type = type || 'square'; vol = vol || 0.08;
+  const o = AC.createOscillator(), g = AC.createGain();
+  o.type = type;
+  o.frequency.setValueAtTime(f, AC.currentTime + t0);
+  g.gain.setValueAtTime(vol, AC.currentTime + t0);
+  g.gain.exponentialRampToValueAtTime(0.0001, AC.currentTime + t0 + d);
+  o.connect(g); g.connect(AC.destination);
+  o.start(AC.currentTime + t0); o.stop(AC.currentTime + t0 + d + 0.02);
+}
+function sfx(name){
+  if(!soundOn || !AC) return;
+  if(name === 'pickup'){ tone(660,0,.08); tone(990,.08,.14); }
+  if(name === 'pickw'){ tone(520,0,.1,'triangle'); tone(780,.1,.1,'triangle'); tone(1040,.2,.2,'triangle'); }
+  if(name === 'eat'){ tone(440,0,.07,'sine'); tone(990,.08,.14); tone(1320,.16,.2); }
+  if(name === 'slash'){ tone(340,0,.1,'sawtooth',.05); tone(120,.04,.12,'sawtooth',.05); }
+  if(name === 'hit'){ tone(150,0,.15,'square',.09); tone(120,.04,.12,'sawtooth',.05); }
+  if(name === 'hurt'){ tone(220,0,.12,'sawtooth',.09); tone(110,.06,.16,'sawtooth',.07); }
+  if(name === 'share'){ tone(392,0,.2,'sine',.07); tone(523,.1,.2,'sine',.07); tone(659,.2,.3,'sine',.07); }
+  if(name === 'win'){ [523,659,784,1047].forEach((f,i)=>tone(f,i*.14,.2,'triangle',.09)); }
+  if(name === 'lose'){ [523,494,466,440].forEach((f,i)=>tone(f,i*.14,.2,'triangle',.09)); }
+}
+
+/* ---------- состояние ---------- */
+let state = 'title', paused = false, gameTime = 0, victory = -1, heartTick = 0;
+let trees = [], flowers = [], items = [], monsters = [], parts = [], texts = [], friends = [];
+let bg = null, banner = { text: '', t: 0 };
+const cams = { x: 0, y: 0 };
+const P = { x: 300, y: 560, face: 1, hp: 5, maxHp: 5, inv: 0, atkCd: 0, atkT: 0, anim: 0, step: 0, food: 0, things: 0, sword: false };
+
+function mulberry(seed){
+  let a = seed >>> 0;
+  return function(){
+    a |= 0; a = a + 0x6D2B7B59 | 0;
+    let t = Math.imul(a ^ a >>> 15, 1 | a);
+    t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t;
+    return ((t ^ t >>> 14) >>> 0) / 4294967296;
+  };
+}
+
+function startRun(){
+  state = 'play'; paused = false; gameTime = 0; victory = -1; heartTick = 0;
+  Object.assign(P, { x: 300, y: 560, face: 1, hp: 5, maxHp: 5, inv: 0, atkCd: 0, atkT: 0, anim: 0, step: 0, food: 0, things: 0, sword: false });
+  friends = []; parts = []; texts = [];
+  buildWorld();
+  cams.x = Math.max(0, Math.min(WORLD.w - W, P.x - W / 2));
+  cams.y = Math.max(0, Math.min(WORLD.h - H, P.y - H / 2));
+  msg('Монстры сломали дом! Собери еду, вещи и меч — и победи их всех!');
+}
+
+function buildWorld(){
+  const r = mulberry(7);
+  trees = []; flowers = []; items = []; monsters = [];
+  // деревья (не на доме и не на старте)
+  for(let i = 0; i < 26; i++){
+    const x = 80 + r() * (WORLD.w - 160), y = 80 + r() * (WORLD.h - 160);
+    if(x > HOUSE.x - 80 && x < HOUSE.x + HOUSE.w + 80 && y > HOUSE.y - 80 && y < HOUSE.y + HOUSE.h + 80) continue;
+    if(Math.abs(x - 300) < 90 && Math.abs(y - 560) < 90) continue;
+    trees.push({ x, y, r: 24 + r() * 10, s: 0.9 + r() * 0.4 });
+  }
+  // цветы
+  for(let i = 0; i < 90; i++) flowers.push({ x: r() * WORLD.w, y: r() * WORLD.h, c: r() < 0.5 ? '#ffd166' : '#ff8fab', s: 2 + r() * 3 });
+  // еда — 6
+  const foodPos = [[430,320],[760,180],[1230,300],[1560,640],[880,1080],[420,1050]];
+  const foodNames = ['яблоко','яблоко','сыр','ягоды','мёд','яблоко'];
+  foodPos.forEach((p, i) => items.push({ kind:'food', name: foodNames[i], x: p[0], y: p[1], taken:false, ph: r() * 6 }));
+  // вещи — 3
+  const thingPos = [[1500,180],[600,760],[1700,1150]];
+  const thingNames = ['шапка','мячик','книжка'];
+  thingPos.forEach((p, i) => items.push({ kind:'thing', name: thingNames[i], x: p[0], y: p[1], taken:false, ph: r() * 6 }));
+  // меч
+  items.push({ kind:'weapon', name:'меч', x: 1320, y: 900, taken:false, ph: 0 });
+  // монстры — 8 (s = слизень, B = большой)
+  const mons = [[700,420,'s'],[1050,240,'s'],[1400,500,'s'],[300,900,'s'],[1100,1080,'s'],[1650,300,'s'],[870,700,'B'],[1500,1050,'B']];
+  mons.forEach(m => monsters.push({
+    x: m[0], y: m[1], type: m[2],
+    hp: m[2] === 'B' ? 4 : 2, maxHp: m[2] === 'B' ? 4 : 2,
+    sp: m[2] === 'B' ? 58 : 82, dir: r() * 6.283, t: 0, flash: 0, ph: r() * 6, dead: false
+  }));
+  bg = makeBG();
+}
+
+/* фон рисуем один раз в отдельный холст — быстро и красиво */
+function makeBG(){
+  const c = document.createElement('canvas'); c.width = WORLD.w; c.height = WORLD.h;
+  const g = c.getContext('2d'); const r = mulberry(3);
+  g.fillStyle = '#4e8f43'; g.fillRect(0, 0, WORLD.w, WORLD.h);
+  for(let i = 0; i < 260; i++){
+    const x = r() * WORLD.w, y = r() * WORLD.h, rr = 30 + r() * 80;
+    g.fillStyle = r() < 0.5 ? 'rgba(116,183,90,0.25)' : 'rgba(62,124,58,0.3)';
+    g.beginPath(); g.ellipse(x, y, rr, rr * 0.6, 0, 0, 7); g.fill();
+  }
+  g.strokeStyle = 'rgba(58,110,50,0.9)'; g.lineWidth = 2;
+  for(let i = 0; i < 700; i++){
+    const x = r() * WORLD.w, y = r() * WORLD.h, h = 5 + r() * 8;
+    g.beginPath(); g.moveTo(x, y); g.quadraticCurveTo(x + 2, y - h * 0.6, x + (r() < 0.5 ? -3 : 3), y - h); g.stroke();
+  }
+  return c;
+}
+
+/* ---------- помощники ---------- */
+function msg(text){ banner = { text, t: 4 }; }
+function addText(x, y, text, col){ texts.push({ x, y, text, col, life: 1.2 }); }
+function foodTotal(){ return FOOD_N - P.food; }
+function thingsLeft(){ return THING_N - P.things; }
+function roundRect(x, y, w, h, r){
+  ctx.beginPath();
+  ctx.moveTo(x + r, y); ctx.arcTo(x + w, y, x + w, y + h, r);
+  ctx.arcTo(x + w, y + h, x, y + h, r); ctx.arcTo(x, y, x + w, y, r); ctx.closePath();
+}
+
+function collideWorld(o, r){
+  for(const t of trees){
+    const dx = o.x - t.x, dy = o.y - t.y, d = Math.hypot(dx, dy), min = r + t.r * 0.55;
+    if(d < min && d > 0.001){ o.x = t.x + dx / d * min; o.y = t.y + dy / d * min; }
+  }
+  if(o.x + r > HOUSE.x && o.x - r < HOUSE.x + HOUSE.w && o.y + r > HOUSE.y && o.y - r < HOUSE.y + HOUSE.h){
+    const dl = o.x + r - HOUSE.x, dr = HOUSE.x + HOUSE.w - (o.x - r),
+          du = o.y + r - HOUSE.y, dd = HOUSE.y + HOUSE.h - (o.y - r);
+    const m = Math.min(dl, dr, du, dd);
+    if(m === dl) o.x = HOUSE.x - r; else if(m === dr) o.x = HOUSE.x + HOUSE.w + r;
+    else if(m === du) o.y = HOUSE.y - r; else o.y = HOUSE.y + HOUSE.h + r;
+  }
+}
+
+/* ---------- действия игрока ---------- */
+function doAttack(){
+  const dx = P.face, range = P.sword ? 95 : 70, dmg = P.sword ? 2 : 1;
+  for(const m of monsters){
+    if(m.dead) continue;
+    const mx = m.x - P.x, my = m.y - P.y, d = Math.hypot(mx, my);
+    if(d < range + (m.type === 'B' ? 14 : 8) && mx * dx > -20){
+      m.hp -= dmg; m.flash = 0.15;
+      const l = Math.max(1, d); m.x += mx / l * 26; m.y += my / l * 26;
+      if(m.hp <= 0){
+        m.dead = true;
+        for(let i = 0; i < 14; i++) parts.push({
+          x: m.x, y: m.y, vx: (Math.random() - 0.5) * 160, vy: (Math.random() - 0.5) * 160 - 40,
+          life: 0.5 + Math.random() * 0.4, r: 2 + Math.random() * 3, col: m.type === 'B' ? '#4f9e5f' : '#8a5fd6'
+        });
+        sfx('hit');
+      } else sfx('hit');
+    }
+  }
+  monsters = monsters.filter(m => !m.dead);
+}
+
+function tryPickup(){
+  let best = null, bd = 46;
+  for(const it of items){
+    if(it.taken) continue;
+    const d = Math.hypot(it.x - P.x, it.y - P.y);
+    if(d < bd){ bd = d; best = it; }
+  }
+  if(!best){ addText(P.x, P.y - 30, 'Рядом нет предметов', '#cfd8e3'); return; }
+  best.taken = true;
+  if(best.kind === 'food'){ P.food++; sfx('pickup'); addText(best.x, best.y - 20, '+ ' + best.name + ' (' + P.food + '/' + FOOD_N + ')', '#ffd166'); }
+  else if(best.kind === 'thing'){ P.things++; sfx('pickup'); addText(best.x, best.y - 20, '+ ' + best.name + ' (' + P.things + '/' + THING_N + ')', '#9be7ff'); }
+  else { P.sword = true; sfx('pickw'); addText(best.x, best.y - 20, 'Меч найден! F — бить сильнее', '#ffe08a'); msg('Меч найден! Теперь F бьёт сильнее и дальше.'); }
+}
+
+function tryEat(){
+  if(P.food <= 0){ addText(P.x, P.y - 30, 'Нет еды', '#cfd8e3'); return; }
+  if(P.hp >= P.maxHp){ addText(P.x, P.y - 34, 'Полное здоровье', '#7ee08a'); return; }
+  P.food--; P.hp = Math.min(P.maxHp, P.hp + 2);
+  sfx('eat'); addText(P.x, P.y - 34, '+2 ❤', '#ff8fab');
+}
+
+/* ---------- монстры ---------- */
+function updateMonsters(dt){
+  for(const m of monsters){
+    if(m.flash > 0) m.flash -= dt;
+    m.ph += dt * 4;
+    const dx = P.x - m.x, dy = P.y - m.y, d = Math.hypot(dx, dy) || 1;
+    let vx, vy;
+    if(d < 300 && victory < 0){ vx = dx / d * m.sp; vy = dy / d * m.sp; }
+    else {
+      m.t -= dt;
+      if(m.t <= 0){ m.t = 1.5 + Math.random() * 2; m.dir = Math.random() * 6.283; }
+      vx = Math.cos(m.dir) * m.sp * 0.45; vy = Math.sin(m.dir) * m.sp * 0.45;
+    }
+    m.x = Math.max(24, Math.min(WORLD.w - 24, m.x + vx * dt));
+    m.y = Math.max(24, Math.min(WORLD.h - 24, m.y + vy * dt));
+    collideWorld(m, 12);
+    if(d < 30 && P.inv <= 0 && victory < 0){
+      P.hp -= 1; P.inv = 1.1; sfx('hurt');
+      const l = Math.max(1, d); P.x += dx / l * 40; P.y += dy / l * 40;
+      collideWorld(P, 16);
+      addText(P.x, P.y - 34, '-1 ❤', '#ff7b7b');
+      if(P.hp <= 0){ state = 'lose'; sfx('lose'); }
+    }
+  }
+}
+
+/* ---------- победа: делимся с друзьями ---------- */
+function startVictory(){
+  msg('Всё собрано! Артём спешит поделиться с друзьями!');
+  friends = [
+    { kind:'mom',   name:'Венера', x: P.x - 140, y: P.y - 80,  tx: P.x - 46, ty: P.y - 6  },
+    { kind:'bunny', name:'зайчик', x: P.x + 160, y: P.y - 120, tx: P.x + 46, ty: P.y - 4  },
+    { kind:'hedge', name:'ёжик', x: P.x + 40, y: P.y + 150, tx: P.x + 30, ty: P.y + 26 },
+    { kind:'bird', name:'птичка', x: P.x - 60, y: P.y - 150, tx: P.x - 30, ty: P.y - 30 }
+  ];
+  sfx('share');
+}
+
+/* ---------- обновление ---------- */
+function update(dt){
+  gameTime += dt;
+  if(P.inv > 0) P.inv -= dt;
+  if(P.atkCd > 0) P.atkCd -= dt;
+  if(P.atkT > 0) P.atkT -= dt;
+
+  let ax = 0, ay = 0;
+  if(keys.KeyA || keys.ArrowLeft) ax -= 1;
+  if(keys.KeyD || keys.ArrowRight) ax += 1;
+  if(keys.KeyW || keys.ArrowUp) ay -= 1;
+  if(keys.KeyS || keys.ArrowDown) ay += 1;
+  const run = !!keys.Space;
+  const sp = run ? 300 : 170;
+  if(ax || ay){
+    const l = Math.hypot(ax, ay); ax /= l; ay /= l;
+    P.x += ax * sp * dt; P.y += ay * sp * dt;
+    if(ax) P.face = Math.sign(ax);
+    P.anim += dt * (run ? 14 : 9); P.step = 1;
+  } else P.step = 0;
+  collideWorld(P, 16);
+  P.x = Math.max(20, Math.min(WORLD.w - 20, P.x));
+  P.y = Math.max(20, Math.min(WORLD.h - 20, P.y));
+
+  if(pressed.KeyF && P.atkCd <= 0){ P.atkCd = 0.45; P.atkT = 0.18; sfx('slash'); doAttack(); }
+  if(pressed.KeyE) tryPickup();
+  if(pressed.KeyQ) tryEat();
+
+  updateMonsters(dt);
+
+  for(let i = parts.length - 1; i >= 0; i--){
+    const p = parts[i];
+    p.x += p.vx * dt; p.y += p.vy * dt; p.vy += (p.heart ? -40 : 160) * dt; p.life -= dt;
+    if(p.life <= 0) parts.splice(i, 1);
+  }
+  for(let i = texts.length - 1; i >= 0; i--){
+    texts[i].y -= 26 * dt; texts[i].life -= dt;
+    if(texts[i].life <= 0) texts.splice(i, 1);
+  }
+
+  const tx = Math.max(0, Math.min(WORLD.w - W, P.x - W / 2));
+  const ty = Math.max(0, Math.min(WORLD.h - H, P.y - H / 2));
+  cams.x += (tx - cams.x) * Math.min(1, 8 * dt);
+  cams.y += (ty - cams.y) * Math.min(1, 8 * dt);
+
+  if(victory < 0 && foodTotal() === 0 && thingsLeft() === 0 && P.sword && monsters.length === 0){
+    victory = 0; startVictory();
+  }
+  if(victory >= 0){
+    victory += dt;
+    heartTick -= dt;
+    if(heartTick <= 0){
+      heartTick = 0.28;
+      const fx = friends.length ? friends[Math.floor(Math.random() * friends.length)] : P;
+      parts.push({ x: fx.x + (Math.random() - 0.5) * 20, y: fx.y - 24, vx: (Math.random() - 0.5) * 20, vy: -30, life: 1.1, r: 5, col: '#ff8fab', heart: true });
+    }
+    for(const f of friends){
+      f.x += (f.tx - f.x) * Math.min(1, 8 * dt);
+      f.y += (f.ty - f.y) * Math.min(1, 8 * dt);
+    }
+    if(victory > 3.2){ state = 'win'; sfx('win'); }
+  }
+  if(banner.t > 0) banner.t -= dt;
+}
+
+/* ---------- отрисовка ---------- */
+function drawFox(p, s){
+  const t = performance.now() / 1000;
+  const bob = p.step ? Math.sin(p.anim) * 3 : Math.sin(t * 2) * 1.5;
+  ctx.save();
+  ctx.translate(p.x, p.y);
+  if(p.inv > 0 && Math.floor(p.inv * 12) % 2 === 0) ctx.globalAlpha = 0.45;
+  ctx.fillStyle = 'rgba(0,0,0,0.22)';
+  ctx.beginPath(); ctx.ellipse(0, 16 * s, 20 * s, 7 * s, 0, 0, 7); ctx.fill();
+  ctx.scale(p.face * s, s);
+  ctx.translate(0, bob * 0.5);
+  const wag = Math.sin(t * 6 + p.anim) * 8;
+  // хвост с белым кончиком
+  ctx.strokeStyle = p.fur || '#ef8f2f'; ctx.lineWidth = 10; ctx.lineCap = 'round';
+  ctx.beginPath(); ctx.moveTo(-14, 2); ctx.quadraticCurveTo(-30, -6 + wag * 0.4, -36, -14 + wag); ctx.stroke();
+  ctx.strokeStyle = '#fff6e8'; ctx.lineWidth = 8;
+  ctx.beginPath(); ctx.moveTo(-33, -11 + wag * 0.9); ctx.lineTo(-36, -14 + wag); ctx.stroke();
+  // тело
+  ctx.fillStyle = p.fur || '#ef8f2f';
+  ctx.beginPath(); ctx.ellipse(-2, 4, 16, 11, 0, 0, 7); ctx.fill();
+  ctx.fillStyle = '#fff2df';
+  ctx.beginPath(); ctx.ellipse(1, 8, 9, 5, 0, 0, 7); ctx.fill();
+  // ноги
+  const leg = p.step ? Math.sin(p.anim) * 4 : 0;
+  ctx.strokeStyle = '#b85a1a'; ctx.lineWidth = 5;
+  ctx.beginPath(); ctx.moveTo(-8, 12); ctx.lineTo(-8, 17 + leg); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(5, 12); ctx.lineTo(5, 17 - leg); ctx.stroke();
+  // голова
+  ctx.fillStyle = p.fur || '#ef8f2f';
+  ctx.beginPath(); ctx.arc(12, -8, 11, 0, 7); ctx.fill();
+  ctx.fillStyle = '#fff2df';
+  ctx.beginPath(); ctx.ellipse(17, -5, 6, 5, 0, 0, 7); ctx.fill();
+  // уши
+  ctx.fillStyle = p.fur || '#ef8f2f';
+  ctx.beginPath(); ctx.moveTo(6, -16); ctx.lineTo(3, -27); ctx.lineTo(11, -19); ctx.closePath(); ctx.fill();
+  ctx.beginPath(); ctx.moveTo(16, -16); ctx.lineTo(19, -26); ctx.lineTo(21, -15); ctx.closePath(); ctx.fill();
+  ctx.fillStyle = '#7a3b12';
+  ctx.beginPath(); ctx.moveTo(6, -17); ctx.lineTo(4, -24); ctx.lineTo(9, -18); ctx.closePath(); ctx.fill();
+  // глаз и нос
+  ctx.fillStyle = '#2b1c10';
+  ctx.beginPath(); ctx.arc(15, -9, 1.8, 0, 7); ctx.fill();
+  ctx.beginPath(); ctx.arc(21, -6, 1.6, 0, 7); ctx.fill();
+  // меч на спине
+  if(p.sword){
+    ctx.save(); ctx.rotate(-0.7);
+    ctx.strokeStyle = '#c9d2dd'; ctx.lineWidth = 4;
+    ctx.beginPath(); ctx.moveTo(-6, -26); ctx.lineTo(-6, -6); ctx.stroke();
+    ctx.strokeStyle = '#8a6b3a'; ctx.lineWidth = 4;
+    ctx.beginPath(); ctx.moveTo(-10, -7); ctx.lineTo(-2, -7); ctx.stroke();
+    ctx.restore();
+  }
+  ctx.restore();
+}
+
+function drawMonster(m){
+  const B = m.type === 'B', s = B ? 1.6 : 1, wob = Math.sin(m.ph) * 3 * s;
+  ctx.save(); ctx.translate(m.x, m.y);
+  ctx.fillStyle = 'rgba(0,0,0,0.2)';
+  ctx.beginPath(); ctx.ellipse(0, 14 * s, 16 * s, 6 * s, 0, 0, 7); ctx.fill();
+  ctx.fillStyle = m.flash > 0 ? '#ffffff' : (B ? '#4f9e5f' : '#8a5fd6');
+  ctx.beginPath();
+  ctx.moveTo(-16 * s, 12 * s);
+  ctx.quadraticCurveTo(-18 * s, -8 * s + wob, 0, -12 * s + wob);
+  ctx.quadraticCurveTo(18 * s, -8 * s + wob, 16 * s, 12 * s);
+  ctx.closePath(); ctx.fill();
+  ctx.fillStyle = '#fff';
+  ctx.beginPath(); ctx.arc(-6 * s, -2 * s + wob, 3.4 * s, 0, 7); ctx.fill();
+  ctx.beginPath(); ctx.arc(6 * s, -2 * s + wob, 3.4 * s, 0, 7); ctx.fill();
+  ctx.fillStyle = '#1c1026';
+  ctx.beginPath(); ctx.arc(-5 * s, -2 * s + wob, 1.7 * s, 0, 7); ctx.fill();
+  ctx.beginPath(); ctx.arc(5 * s, -2 * s + wob, 1.7 * s, 0, 7); ctx.fill();
+  if(m.hp < m.maxHp){
+    ctx.fillStyle = 'rgba(0,0,0,0.4)'; ctx.fillRect(-16 * s, -26 * s, 32 * s, 4);
+    ctx.fillStyle = '#ff5a5a'; ctx.fillRect(-16 * s, -26 * s, 32 * s * (m.hp / m.maxHp), 4);
+  }
+  ctx.restore();
+}
+
+function drawItem(it){
+  const bob = Math.sin(performance.now() / 400 + it.ph) * 3;
+  ctx.save(); ctx.translate(it.x, it.y + bob);
+  ctx.fillStyle = 'rgba(0,0,0,0.18)';
+  ctx.beginPath(); ctx.ellipse(0, 12, 10, 4, 0, 0, 7); ctx.fill();
+  if(it.kind === 'food'){
+    if(it.name === 'яблоко'){
+      ctx.fillStyle = '#e5484d'; ctx.beginPath(); ctx.arc(0, 2, 8, 0, 7); ctx.fill();
+      ctx.strokeStyle = '#5c3a1e'; ctx.lineWidth = 2;
+      ctx.beginPath(); ctx.moveTo(0, -5); ctx.lineTo(0, -10); ctx.stroke();
+      ctx.fillStyle = '#5cb85c'; ctx.beginPath(); ctx.ellipse(5, -10, 5, 2.5, 0.5, 0, 7); ctx.fill();
+      ctx.fillStyle = 'rgba(255,255,255,0.5)'; ctx.beginPath(); ctx.arc(-3, -1, 2, 0, 7); ctx.fill();
+    } else if(it.name === 'сыр'){
+      ctx.fillStyle = '#ffd166';
+      ctx.beginPath(); ctx.moveTo(-10, 6); ctx.lineTo(10, 6); ctx.lineTo(6, -8); ctx.closePath(); ctx.fill();
+      ctx.fillStyle = '#c9a227';
+      ctx.beginPath(); ctx.arc(-2, 2, 1.6, 0, 7); ctx.fill();
+      ctx.beginPath(); ctx.arc(3, 1, 1.6, 0, 7); ctx.fill();
+    } else if(it.name === 'ягоды'){
+      ctx.fillStyle = '#c9364e';
+      ctx.beginPath(); ctx.arc(-4, 2, 5, 0, 7); ctx.fill();
+      ctx.beginPath(); ctx.arc(3, 1, 5, 0, 7); ctx.fill();
+      ctx.strokeStyle = '#5c3a1e'; ctx.lineWidth = 2;
+      ctx.beginPath(); ctx.moveTo(0, -2); ctx.lineTo(0, -7); ctx.stroke();
+    } else { // мёд
+      ctx.fillStyle = '#e8a33d';
+      roundRect(-8, -8, 16, 18, 4); ctx.fill();
+      ctx.fillStyle = '#fff2df'; ctx.font = 'bold 8px Arial'; ctx.fillText('МЁД', -8, 4);
+    }
+  } else if(it.kind === 'thing'){
+    if(it.name === 'шапка'){
+      ctx.fillStyle = '#e5484d';
+      ctx.beginPath(); ctx.arc(0, 2, 9, Math.PI, 0); ctx.closePath(); ctx.fill();
+      ctx.fillStyle = '#fff6e8'; ctx.fillRect(-11, 2, 22, 4);
+      ctx.fillStyle = '#fff'; ctx.beginPath(); ctx.arc(0, -9, 2.5, 0, 7); ctx.fill();
+    } else if(it.name === 'мячик'){
+      ctx.fillStyle = '#4da3ff'; ctx.beginPath(); ctx.arc(0, 0, 9, 0, 7); ctx.fill();
+      ctx.strokeStyle = '#fff6e8'; ctx.lineWidth = 2;
+      ctx.beginPath(); ctx.arc(0, 0, 9, 0, 2); ctx.stroke();
+      ctx.beginPath(); ctx.arc(0, 0, 9, Math.PI, Math.PI + 2); ctx.stroke();
+    } else { // книжка
+      ctx.fillStyle = '#7a5cc4';
+      roundRect(-9, -10, 18, 20, 2); ctx.fill();
+      ctx.fillStyle = '#fff6e8'; ctx.fillRect(-9, -10, 4, 20);
+      ctx.strokeStyle = '#fff6e8'; ctx.lineWidth = 1.5;
+      ctx.beginPath(); ctx.moveTo(-2, -4); ctx.lineTo(6, -4); ctx.moveTo(-2, 0); ctx.lineTo(6, 0); ctx.moveTo(-2, 4); ctx.lineTo(6, 4); ctx.stroke();
+    }
+  } else { // меч — светится
+    const gl = 0.35 + Math.sin(performance.now() / 300) * 0.15;
+    ctx.fillStyle = 'rgba(255,224,138,' + gl.toFixed(2) + ')';
+    ctx.beginPath(); ctx.arc(0, 0, 16, 0, 7); ctx.fill();
+    ctx.fillStyle = '#c9d2dd';
+    ctx.beginPath(); ctx.moveTo(-2, -14); ctx.lineTo(2, -14); ctx.lineTo(2, 6); ctx.lineTo(0, 10); ctx.lineTo(-2, 6); ctx.closePath(); ctx.fill();
+    ctx.strokeStyle = '#8a6b3a'; ctx.lineWidth = 4;
+    ctx.beginPath(); ctx.moveTo(-6, 4); ctx.lineTo(6, 4); ctx.stroke();
+  }
+  ctx.restore();
+}
+
+function drawTree(t){
+  ctx.save(); ctx.translate(t.x, t.y);
+  ctx.fillStyle = 'rgba(0,0,0,0.18)';
+  ctx.beginPath(); ctx.ellipse(0, 6, 22 * t.s, 7 * t.s, 0, 0, 7); ctx.fill();
+  ctx.fillStyle = '#7a5233';
+  ctx.beginPath(); ctx.rect(-4 * t.s, -14 * t.s, 8 * t.s, 20 * t.s); ctx.fill();
+  ctx.fillStyle = '#2f6b2f';
+  ctx.beginPath(); ctx.arc(0, -26 * t.s, 22 * t.s, 0, 7); ctx.fill();
+  ctx.fillStyle = '#3f8b3f';
+  ctx.beginPath(); ctx.arc(-9 * t.s, -30 * t.s, 13 * t.s, 0, 7); ctx.fill();
+  ctx.beginPath(); ctx.arc(9 * t.s, -30 * t.s, 13 * t.s, 0, 7); ctx.fill();
+  ctx.restore();
+}
+
+function drawHouse(){
+  ctx.save(); ctx.translate(HOUSE.x, HOUSE.y);
+  // руины вокруг
+  ctx.fillStyle = '#8d8d8d';
+  ctx.beginPath(); ctx.ellipse(-14, 190, 12, 8, 0, 0, 7); ctx.ellipse(250, 182, 10, 8, 0, 0, 7); ctx.fill();
+  // стены
+  ctx.fillStyle = '#a07850';
+  ctx.fillRect(0, 40, HOUSE.w, 140);
+  ctx.fillStyle = '#8a6440';
+  ctx.fillRect(0, 40, HOUSE.w, 140);
+  ctx.fillStyle = '#4a3421';
+  ctx.fillRect(0, 40, HOUSE.w, 6);
+  // дверь
+  ctx.fillStyle = '#5c4028';
+  ctx.fillRect(100, 100, 44, 80);
+  ctx.fillStyle = '#4a3421';
+  ctx.fillRect(100, 100, 44, 80);
+  ctx.fillStyle = '#e8a33d';
+  ctx.beginPath(); ctx.arc(134, 140, 3, 0, 7); ctx.fill();
+  // окна
+  ctx.fillStyle = '#1d2b46';
+  ctx.fillRect(24, 70, 40, 34); ctx.fillRect(176, 70, 40, 34);
+  ctx.strokeStyle = '#4a3421'; ctx.lineWidth = 3;
+  ctx.strokeRect(24, 70, 40, 34); ctx.strokeRect(176, 70, 40, 34);
+  // трещины
+  ctx.strokeStyle = '#4a3421'; ctx.lineWidth = 2;
+  ctx.beginPath(); ctx.moveTo(10, 45); ctx.lineTo(22, 90); ctx.lineTo(10, 130); ctx.lineTo(22, 175); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(230, 45); ctx.lineTo(218, 90); ctx.lineTo(230, 130); ctx.lineTo(218, 175); ctx.stroke();
+  // сломанная крыша (обломки)
+  ctx.fillStyle = '#7a4438';
+  ctx.beginPath(); ctx.moveTo(-16, 44); ctx.lineTo(70, 4); ctx.lineTo(96, 40); ctx.closePath(); ctx.fill();
+  ctx.beginPath(); ctx.moveTo(140, 40); ctx.lineTo(170, 0); ctx.lineTo(256, 44); ctx.closePath(); ctx.fill();
+  ctx.restore();
+}
+
+function drawFriend(f){
+  ctx.save(); ctx.translate(f.x, f.y);
+  ctx.fillStyle = 'rgba(0,0,0,0.18)';
+  ctx.beginPath(); ctx.ellipse(0, 12, 12, 4, 0, 0, 7); ctx.fill();
+  if(f.kind === 'mom'){
+    ctx.restore();
+    drawFox({ x: f.x, y: f.y, face: 1, step: 0, anim: 0, inv: 0, sword: false, fur: '#f2a65a' }, 1.25);
+    ctx.save(); ctx.translate(f.x, f.y);
+    ctx.fillStyle = '#fff6e8'; ctx.font = 'bold 12px Segoe UI'; ctx.textAlign = 'center';
+    ctx.fillText('Венера ❤', 0, -40);
+    ctx.textAlign = 'left';
+    ctx.restore();
+    return;
+  }
+  if(f.kind === 'bunny'){
+    ctx.fillStyle = '#e8e3d9';
+    ctx.beginPath(); ctx.ellipse(0, 4, 12, 10, 0, 0, 7); ctx.fill();
+    ctx.beginPath(); ctx.arc(8, -4, 8, 0, 7); ctx.fill();
+    ctx.fillStyle = '#e8e3d9';
+    ctx.beginPath(); ctx.ellipse(5, -16, 3, 9, 0.15, 0, 7); ctx.fill();
+    ctx.beginPath(); ctx.ellipse(11, -16, 3, 9, -0.15, 0, 7); ctx.fill();
+    ctx.fillStyle = '#2b1c10';
+    ctx.beginPath(); ctx.arc(10, -5, 1.5, 0, 7); ctx.fill();
+    ctx.fillStyle = '#ff8fab';
+    ctx.beginPath(); ctx.arc(13, -1, 1.5, 0, 7); ctx.fill();
+  } else if(f.kind === 'hedge'){
+    ctx.fillStyle = '#7a5233';
+    ctx.beginPath(); ctx.ellipse(0, 0, 13, 10, 0, 0, 7); ctx.fill();
+    ctx.strokeStyle = '#2b1c10'; ctx.lineWidth = 2;
+    for(let i = 0; i < 5; i++){
+      const a = -2.7 + i * 0.4;
+      ctx.beginPath(); ctx.moveTo(Math.cos(a) * 10, Math.sin(a) * 8); ctx.lineTo(Math.cos(a) * 18, Math.sin(a) * 15); ctx.stroke();
+    }
+    ctx.fillStyle = '#2b1c10';
+    ctx.beginPath(); ctx.arc(8, -2, 1.8, 0, 7); ctx.fill();
+  } else { // bird
+    ctx.fillStyle = '#4da3ff';
+    ctx.beginPath(); ctx.ellipse(0, 0, 8, 7, 0, 0, 7); ctx.fill();
+    ctx.beginPath(); ctx.arc(6, -5, 5, 0, 7); ctx.fill();
+    ctx.fillStyle = '#e8a33d';
+    ctx.beginPath(); ctx.moveTo(10, -5); ctx.lineTo(15, -4); ctx.lineTo(10, -2); ctx.closePath(); ctx.fill();
+    ctx.fillStyle = '#2b1c10';
+    ctx.beginPath(); ctx.arc(7, -6, 1.3, 0, 7); ctx.fill();
+    ctx.fillStyle = '#4da3ff';
+    ctx.beginPath(); ctx.moveTo(-2, -2); ctx.lineTo(-8, -6); ctx.lineTo(-2, -6); ctx.closePath(); ctx.fill();
+  }
+  ctx.restore();
+}
+
+function drawHeart(x, y, s, col){
+  ctx.save(); ctx.translate(x, y); ctx.scale(s / 10, s / 10);
+  ctx.fillStyle = col;
+  ctx.beginPath();
+  ctx.moveTo(0, 3);
+  ctx.bezierCurveTo(-9, -6, -2, -14, 0, -5);
+  ctx.bezierCurveTo(2, -14, 9, -6, 0, 3);
+  ctx.fill(); ctx.restore();
+}
+
+function drawHUD(){
+  for(let i = 0; i < P.maxHp; i++)
+    drawHeart(24 + i * 26, 26, 18, '#ff4d5e');
+  ctx.fillStyle = 'rgba(10,16,28,0.62)';
+  roundRect(18, 44, 262, 112, 10); ctx.fill();
+  ctx.fillStyle = '#e8eef7'; ctx.font = 'bold 14px Segoe UI';
+  ctx.fillText('ЦЕЛЬ: собрать всё и победить!', 28, 64);
+  ctx.font = '13px Segoe UI';
+  ctx.fillStyle = foodTotal() ? '#ffd166' : '#7ee08a';
+  ctx.fillText((foodTotal() ? '☐' : '☑') + ' Еда: ' + P.food + '/' + FOOD_N, 28, 86);
+  ctx.fillStyle = thingsLeft() ? '#9be7ff' : '#7ee08a';
+  ctx.fillText((thingsLeft() ? '☐' : '☑') + ' Вещи: ' + P.things + '/' + THING_N, 28, 106);
+  ctx.fillStyle = P.sword ? '#7ee08a' : '#ffe08a';
+  ctx.fillText((P.sword ? '☑' : '☐') + ' Меч найден', 28, 126);
+  ctx.fillStyle = monsters.length ? '#ff9b9b' : '#7ee08a';
+  ctx.fillText((monsters.length ? '☐' : '☑') + ' Монстры: ' + (MON_N - monsters.length) + '/' + MON_N, 28, 146);
+}
+
+function drawCompass(){
+  let best = null, bd = 1e9;
+  for(const it of items){
+    if(it.taken) continue;
+    const d = Math.hypot(it.x - P.x, it.y - P.y);
+    if(d < bd){ bd = d; best = it; }
+  }
+  if(!best && monsters.length){
+    for(const m of monsters){
+      const d = Math.hypot(m.x - P.x, m.y - P.y);
+      if(d < bd){ bd = d; best = m; }
+    }
+  }
+  if(!best) return;
+  const sx = best.x - cams.x, sy = best.y - cams.y;
+  if(sx > 10 && sx < W - 10 && sy > 10 && sy < H - 10) return;
+  const ang = Math.atan2(sy - H / 2, sx - W / 2);
+  const ex = W / 2 + Math.cos(ang) * (Math.min(W, H) / 2 - 46);
+  const ey = H / 2 + Math.sin(ang) * (Math.min(W, H) / 2 - 46);
+  ctx.save(); ctx.translate(ex, ey); ctx.rotate(ang);
+  ctx.fillStyle = best.kind === 'weapon' ? '#ffe08a' : (best.kind === 'food' ? '#ffd166' : (best.kind === 'thing' ? '#9be7ff' : '#ff9b9b'));
+  ctx.beginPath(); ctx.moveTo(12, 0); ctx.lineTo(-8, 7); ctx.lineTo(-8, -7); ctx.closePath(); ctx.fill();
+  ctx.restore();
+}
+
+function drawBanner(){
+  if(banner.t <= 0) return;
+  const a = Math.min(1, banner.t / 0.6);
+  ctx.save(); ctx.globalAlpha = a;
+  ctx.font = 'bold 17px Segoe UI';
+  const w = ctx.measureText(banner.text).width + 36;
+  ctx.fillStyle = 'rgba(10,16,28,0.75)';
+  roundRect(W / 2 - w / 2, 14, w, 36, 12); ctx.fill();
+  ctx.fillStyle = '#ffe08a'; ctx.textAlign = 'center';
+  ctx.fillText(banner.text, W / 2, 38);
+  ctx.restore(); ctx.textAlign = 'left';
+}
+
+function drawParticles(){
+  for(const p of parts){
+    ctx.globalAlpha = Math.max(0, Math.min(1, p.life));
+    if(p.heart) drawHeart(p.x, p.y, p.r * 2, p.col);
+    else {
+      ctx.fillStyle = p.col;
+      ctx.beginPath(); ctx.arc(p.x, p.y, p.r, 0, 7); ctx.fill();
+    }
+  }
+  ctx.globalAlpha = 1;
+}
+
+function drawTexts(){
+  ctx.font = 'bold 13px Segoe UI'; ctx.textAlign = 'center';
+  for(const t of texts){
+    ctx.globalAlpha = Math.max(0, Math.min(1, t.life));
+    ctx.fillStyle = t.col;
+    ctx.fillText(t.text, t.x, t.y);
+  }
+  ctx.globalAlpha = 1; ctx.textAlign = 'left';
+}
+
+function drawSlash(){
+  if(P.atkT <= 0) return;
+  const k = P.atkT / 0.18, R = P.sword ? 95 : 70;
+  ctx.save(); ctx.globalAlpha = k * 0.9;
+  ctx.strokeStyle = '#fff6e8'; ctx.lineWidth = 4;
+  const a0 = -1.2, a1 = 1.2;
+  ctx.beginPath();
+  ctx.arc(P.x, P.y - 8, R, a0 + (1 - k) * (a1 - a0) * 0.4, a0 + (1 - k) * (a1 - a0) * 0.4 + 1.1 * (P.face > 0 ? 1 : -1), P.face < 0);
+  ctx.stroke();
+  ctx.restore();
+}
+
+function drawFlowers(){
+  for(const f of flowers){
+    ctx.fillStyle = f.c;
+    ctx.beginPath(); ctx.arc(f.x, f.y, f.s, 0, 7); ctx.fill();
+  }
+}
+
+function drawTitle(){
+  const g = ctx.createLinearGradient(0, 0, 0, H);
+  g.addColorStop(0, '#1d2b46'); g.addColorStop(0.7, '#2c3a5c'); g.addColorStop(1, '#2c4a3a');
+  ctx.fillStyle = g; ctx.fillRect(0, 0, W, H);
+  // луна
+  ctx.fillStyle = 'rgba(255,244,214,0.9)';
+  ctx.beginPath(); ctx.arc(820, 110, 44, 0, 7); ctx.fill();
+  ctx.fillStyle = '#1d2b46';
+  ctx.beginPath(); ctx.arc(802, 100, 40, 0, 7); ctx.fill();
+  // звёзды
+  for(let i = 0; i < 40; i++){
+    const x = (i * 137 + 61) % W, y = (i * 61 + 13) % 300;
+    ctx.fillStyle = 'rgba(255,255,255,' + (0.3 + (i % 5) * 0.12) + ')';
+    ctx.fillRect(x, y, 2, 2);
+  }
+  // трава
+  ctx.fillStyle = '#2c4a3a';
+  ctx.fillRect(0, H - 90, W, 90);
+  drawFox({ x: W / 2, y: H - 130, face: 1, step: 0, anim: 0, inv: 0, sword: false }, 2.6);
+  drawFox({ x: W / 2 + 150, y: H - 104, face: -1, step: 0, anim: 0, inv: 0, sword: false, fur: '#f2a65a' }, 1.4);
+  ctx.fillStyle = '#fff6e8'; ctx.font = 'bold 12px Segoe UI'; ctx.textAlign = 'center';
+  ctx.fillText('Венера (мама)', W / 2 + 150, H - 120);
+  // заголовок
+  ctx.fillStyle = '#ffb347'; ctx.font = 'bold 44px Segoe UI';
+  ctx.fillText('Прохождение лисы на свободу', W / 2, 150);
+  ctx.fillStyle = '#c9d2dd'; ctx.font = '16px Segoe UI';
+  ctx.fillText('Монстры сломали дом Артёма. Собери еду, вещи и меч,', W / 2, 196);
+  ctx.fillText('победи всех монстров — и поделись с друзьями!', W / 2, 220);
+  // управление
+  ctx.fillStyle = 'rgba(10,16,28,0.5)';
+  roundRect(W / 2 - 230, 250, 460, 120, 12); ctx.fill();
+  ctx.fillStyle = '#e8eef7'; ctx.font = '15px Segoe UI';
+  const isTouch = ('ontouchstart' in window) || navigator.maxTouchPoints > 0;
+  const lines = isTouch ? [
+    'Джойстик слева — ходить, кнопка БЕГ — бежать',
+    'ВЗЯТЬ — взять предмет · БИТЬ — бить',
+    'ЕДА — съесть (+2 ❤) · II — пауза · тап по экрану — заново'
+  ] : [
+    'W / A / S / D — ходить',
+    'ПРОБЕЛ — бег · E — взять предмет · F — бить',
+    'Q — съесть еду (+2 ❤) · P — пауза · M — звук · R — заново'
+  ];
+  lines.forEach((l, i) => ctx.fillText(l, W / 2, 280 + i * 26));
+  // мигающая подсказка
+  if(Math.floor(performance.now() / 500) % 2 === 0){
+    ctx.fillStyle = '#ffe08a'; ctx.font = 'bold 20px Segoe UI';
+    ctx.fillText(isTouch ? '— Коснись экрана —' : '— Нажми любую клавишу —', W / 2, 420);
+  }
+  ctx.fillStyle = '#7f8ba1'; ctx.font = '12px Segoe UI';
+  ctx.fillText('v0.2 · игра работает без интернета · Дима Исаев', W / 2, H - 20);
+  ctx.textAlign = 'left';
+}
+
+function drawOverlay(title, sub, sub2, col){
+  ctx.fillStyle = 'rgba(8,12,28,0.78)';
+  ctx.fillRect(0, 0, W, H);
+  ctx.textAlign = 'center';
+  ctx.fillStyle = col; ctx.font = 'bold 52px Segoe UI';
+  ctx.fillText(title, W / 2, H / 2 - 60);
+  ctx.fillStyle = '#e8eef7'; ctx.font = '16px Segoe UI';
+  ctx.fillText(sub, W / 2, H / 2 - 6);
+  ctx.fillText(sub2, W / 2, H / 2 + 24);
+  if(Math.floor(performance.now() / 500) % 2 === 0){
+    ctx.fillStyle = '#ffe08a'; ctx.font = 'bold 20px Segoe UI';
+    ctx.fillText('Нажми R — играть заново', W / 2, H / 2 + 80);
+  }
+  ctx.textAlign = 'left';
+}
+
+function render(){
+  if(state === 'title'){ drawTitle(); return; }
+  ctx.drawImage(bg, -cams.x, -cams.y);
+  ctx.save();
+  ctx.translate(-cams.x, -cams.y); /* весь мир рисуем с поправкой на камеру */
+  drawFlowers();
+  drawHouse();
+  for(const it of items) if(!it.taken) drawItem(it);
+  const ents = [];
+  for(const t of trees) ents.push({ y: t.y, d: () => drawTree(t) });
+  for(const m of monsters) ents.push({ y: m.y, d: () => drawMonster(m) });
+  for(const f of friends) ents.push({ y: f.y, d: () => drawFriend(f) });
+  ents.push({ y: P.y, d: () => drawFox(P, 1) });
+  ents.sort((a, b) => a.y - b.y);
+  for(const e of ents) e.d();
+  drawSlash();
+  drawParticles();
+  drawTexts();
+  ctx.restore(); /* конец мировых координат — HUD в координатах экрана */
+  drawHUD();
+  drawCompass();
+  drawBanner();
+  if(state === 'win'){
+    const mm = Math.floor(gameTime / 60), ss = Math.floor(gameTime % 60);
+    drawOverlay('ПОБЕДА! Свобода!',
+      'Артём поделился едой с друзьями и мамой Венерой ❤',
+      'Еда ' + P.food + '/' + FOOD_N + ' · Вещи ' + P.things + '/' + THING_N + ' · Время ' + mm + ':' + String(ss).padStart(2, '0'),
+      '#7ee08a');
+  } else if(state === 'lose')
+    drawOverlay('Монстры победили...', 'Артём устал, но не сдался. Попробуй ещё раз!', 'Беги от монстров и бей F!', '#ff9b9b');
+  if(paused){
+    ctx.fillStyle = 'rgba(8,12,28,0.6)'; ctx.fillRect(0, 0, W, H);
+    ctx.fillStyle = '#ffe08a'; ctx.font = 'bold 52px Segoe UI'; ctx.textAlign = 'center';
+    ctx.fillText('ПАУЗА', W / 2, H / 2);
+    ctx.font = '16px Segoe UI'; ctx.fillStyle = '#c9d2dd';
+    ctx.fillText('P — продолжить · R — заново', W / 2, H / 2 + 40);
+    ctx.textAlign = 'left';
+  }
+}
+
+/* ---------- главный цикл ---------- */
+let last = performance.now();
+function loop(now){
+  const dt = Math.min(0.05, (now - last) / 1000); last = now;
+  if(state === 'play'){
+    if(pressed.KeyP || pressed.Escape) paused = !paused;
+    if(pressed.KeyM) soundOn = !soundOn;
+    if(pressed.KeyR) startRun();
+    if(!paused) update(dt);
+  } else if(state === 'win' || state === 'lose'){
+    if(pressed.KeyR) startRun();
+    if(pressed.KeyM) soundOn = !soundOn;
+  }
+  render();
+  for(const k in pressed) pressed[k] = false;
+  requestAnimationFrame(loop);
+}
+requestAnimationFrame(t => { last = t; requestAnimationFrame(loop); });
+</script>
+</body>
+</html>
